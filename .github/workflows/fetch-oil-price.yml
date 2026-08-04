@@ -30,7 +30,7 @@ jobs:
       - name: 安装依赖
         run: pip install -r requirements.txt
 
-      - name: 抓取油价数据
+      - name: 抓取油价数据并生成 HTML
         env:
           MXNZP_APP_ID: ${{ secrets.MXNZP_APP_ID }}
           MXNZP_APP_SECRET: ${{ secrets.MXNZP_APP_SECRET }}
@@ -40,10 +40,10 @@ jobs:
         run: |
           git config user.name "oilpulse-bot"
           git config user.email "actions@users.noreply.github.com"
-          git add data/
+          git add data/ index.html
           if git diff --cached --quiet; then
             echo "无数据变化，跳过提交"
           else
-            git commit -m "chore: 更新油价数据 $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            git commit -m "chore: 更新油价数据及看板网页 $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
             git push
           fi
