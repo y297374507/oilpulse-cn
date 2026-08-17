@@ -236,14 +236,35 @@
 
   <script>
     const DATA_URL = './data/latest.json';
-    const HOLIDAY_API_URL = 'https://cdn.jsdelivr.net/gh/NateScarlet/holiday-cn@master/2026.json';
+
+    // 2026 年成品油 25 轮调价完整窗口期（均在当天 24:00 生效）
+    const ADJUST_SCHEDULE_2026 = [
+      '2026-01-06', '2026-01-20',
+      '2026-02-03', '2026-02-24',
+      '2026-03-09', '2026-03-23',
+      '2026-04-07', '2026-04-21',
+      '2026-05-08', '2026-05-21',
+      '2026-06-04', '2026-06-18',
+      '2026-07-03', '2026-07-17', '2026-07-31',
+      '2026-08-14', '2026-08-28',
+      '2026-09-11', '2026-09-24',
+      '2026-10-15', '2026-10-29',
+      '2026-11-12', '2026-11-26',
+      '2026-12-10', '2026-12-24'
+    ];
 
     let currentData = null;
     let previousData = null;
-    let holidayData = null;
 
-    // 格式化时间显示
-    function formatDate(isoString) {
+    // 格式化日期：不包含年份（MM月DD日）
+    function formatDateNoYear(dateObj) {
+      const month = String(dateObj.getMonth() + 1).padStart(2, '0');
+      const day = String(dateObj.getDate()).padStart(2, '0');
+      return `${month}月${day}日`;
+    }
+
+    // 格式化更新时间（包含完整年月日与时分秒）
+    function formatDateFull(isoString) {
       if (!isoString) return '--';
       const date = new Date(isoString);
       return date.toLocaleString('zh-CN', {
@@ -280,58 +301,24 @@
       return (isNaN(p) || p === 0) ? '-' : `￥${p.toFixed(2)}`;
     }
 
-    // 判断某一天是否为工作日（考虑法定节假日与调休）
-    function isWorkingDay(date, holidaysMap) {
-      const year = date.getFullYear();
-      const month = String(date.getMonth() + 1).padStart(2, '0');
-      const day = String(date.getDate()).padStart(2, '0');
-      const dateStr = `${year}-${month}-${day}`;
+    // 根据 25 轮调价日历精准匹配下一个调价日并计算剩余天数
+    function calculateNextAdjustDate() {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
 
-      if (holidaysMap && holidaysMap.has(dateStr)) {
-        return !holidaysMap.get(dateStr);
-      }
-
-      const dayOfWeek = date.getDay();
-      return dayOfWeek !== 0 && dayOfWeek !== 6;
-    }
-
-    // 计算下一次调价日期（从最近上一轮调价生效日算起，经历10个工作日）
-    function calculateNextAdjustDate(updatedAtStr, holidayList) {
-      if (!updatedAtStr) return '--';
-      
-      const holidaysMap = new Map();
-      if (holidayList && holidayList.days) {
-        holidayList.days.forEach(item => holidaysMap.set(item.date, item.isOffDay));
-      }
-
-      const updatedDate = new Date(updatedAtStr);
-
-      // 获取上一轮调价生效日（如果数据更新日为调价生效日则直接作为起点，否则往前寻找到上一个生效日）
-      // 成品油调价通常在 24:00 生效，对应次日 00:00
-      let lastAdjustEffectiveDate = new Date(updatedDate);
-      lastAdjustEffectiveDate.setHours(0, 0, 0, 0);
-
-      // 从上一轮调价生效日开始，推算 10 个工作日
-      let countDate = new Date(lastAdjustEffectiveDate);
-      let workDaysCount = 0;
-
-      while (workDaysCount < 10) {
-        countDate.setDate(countDate.getDate() + 1);
-        if (isWorkingDay(countDate, holidaysMap)) {
-          workDaysCount++;
+      let targetDateStr = null;
+      for (const dateStr of ADJUST_SCHEDULE_2026) {
+        const itemDate = new Date(dateStr + 'T00:00:00');
+        if (itemDate >= today) {
+          targetDateStr = dateStr;
+          break;
         }
       }
 
-      const year = countDate.getFullYear();
-      const month = String(countDate.getMonth() + 1).padStart(2, '0');
-      const day = String(countDate.getDate()).padStart(2, '0');
+      if (!targetDateStr) return '调价时间：--';
 
-      // 计算距离今天倒计时天数
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      const targetDate = new Date(countDate);
-      targetDate.setHours(0, 0, 0, 0);
-      const diffDays = Math.ceil((targetDate - today) / (1000 * 60 * 60 * 24));
+      const targetDate = new Date(targetDateStr + 'T00:00:00');
+      const diffDays = Math.round((targetDate - today) / (1000 * 60 * 60 * 24));
 
       let countdownText = '';
       if (diffDays > 0) {
@@ -342,39 +329,25 @@
         countdownText = ' (已到调价日)';
       }
 
-      return `调价时间：${year}年${month}月${day}日 24:00${countdownText}`;
-    }
-
-    async function fetchHolidays() {
-      try {
-        const res = await fetch(HOLIDAY_API_URL);
-        if (res.ok) {
-          holidayData = await res.json();
-        }
-      } catch (e) {
-        console.warn('获取节假日数据失败，将按照常规工作日计算', e);
-      }
+      const formattedMonthDay = formatDateNoYear(targetDate);
+      return `调价时间：${formattedMonthDay} 24:00${countdownText}`;
     }
 
     async function init() {
       try {
-        const [, res] = await Promise.all([
-          fetchHolidays(),
-          fetch(DATA_URL + '?t=' + new Date().getTime())
-        ]);
-
         const cached = localStorage.getItem('last_oil_data');
         if (cached) {
           previousData = JSON.parse(cached);
         }
 
+        const res = await fetch(DATA_URL + '?t=' + new Date().getTime());
         if (!res.ok) throw new Error('网络请求失败');
         currentData = await res.json();
 
-        document.getElementById('updateTime').innerText = `更新时间：${formatDate(currentData.updated_at)}`;
+        document.getElementById('updateTime').innerText = `更新时间：${formatDateFull(currentData.updated_at)}`;
 
-        const nextAdjust = calculateNextAdjustDate(currentData.updated_at, holidayData);
-        document.getElementById('nextAdjustDate').innerText = nextAdjust;
+        // 计算下一个调价日（不含年份）
+        document.getElementById('nextAdjustDate').innerText = calculateNextAdjustDate();
 
         if (!previousData || previousData.updated_at !== currentData.updated_at) {
           localStorage.setItem('last_oil_data', JSON.stringify(currentData));
