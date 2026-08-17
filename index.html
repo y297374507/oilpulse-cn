@@ -18,7 +18,6 @@
       --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
     }
 
-    
     * {
       box-sizing: border-box;
       margin: 0;
@@ -216,7 +215,6 @@
         <div class="update-time" id="updateTime">正在加载数据...</div>
       </div>
       <div class="next-adjust-box" id="nextAdjustBox">
-        <span>预计下一次调价时间：</span>
         <strong id="nextAdjustDate">计算中...</strong>
       </div>
       <div class="controls">
@@ -237,7 +235,6 @@
   </div>
 
   <script>
-    // 假设数据路径（GitHub Actions 生成的数据路径）
     const DATA_URL = './data/latest.json';
     const HOLIDAY_API_URL = 'https://cdn.jsdelivr.net/gh/NateScarlet/holiday-cn@master/2026.json';
 
@@ -277,13 +274,13 @@
       }
     }
 
-    // 格式化价格数值，如果是0则显示 -
+    // 格式化价格数值
     function formatPrice(val) {
       const p = parseFloat(val);
       return (isNaN(p) || p === 0) ? '-' : `￥${p.toFixed(2)}`;
     }
 
-    // 判断某一天是否为工作日（考虑到法定节假日与调休补班）
+    // 判断某一天是否为工作日（考虑法定节假日与调休）
     function isWorkingDay(date, holidaysMap) {
       const year = date.getFullYear();
       const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -291,40 +288,48 @@
       const dateStr = `${year}-${month}-${day}`;
 
       if (holidaysMap && holidaysMap.has(dateStr)) {
-        return !holidaysMap.get(dateStr); // isOffDay为true则非工作日，为false表示调休上班
+        return !holidaysMap.get(dateStr);
       }
 
       const dayOfWeek = date.getDay();
-      return dayOfWeek !== 0 && dayOfWeek !== 6; // 周一到周五为常规工作日
+      return dayOfWeek !== 0 && dayOfWeek !== 6;
     }
 
-    // 根据最后更新时间往后推算 10 个工作日得出下一次调价日期（调价通常在第10个工作日24时生效）
-    function calculateNextAdjustDate(startDateStr, holidayList) {
-      if (!startDateStr) return '--';
+    // 计算下一次调价日期（从最近上一轮调价生效日算起，经历10个工作日）
+    function calculateNextAdjustDate(updatedAtStr, holidayList) {
+      if (!updatedAtStr) return '--';
       
       const holidaysMap = new Map();
       if (holidayList && holidayList.days) {
         holidayList.days.forEach(item => holidaysMap.set(item.date, item.isOffDay));
       }
 
-      let currentDate = new Date(startDateStr);
+      const updatedDate = new Date(updatedAtStr);
+
+      // 获取上一轮调价生效日（如果数据更新日为调价生效日则直接作为起点，否则往前寻找到上一个生效日）
+      // 成品油调价通常在 24:00 生效，对应次日 00:00
+      let lastAdjustEffectiveDate = new Date(updatedDate);
+      lastAdjustEffectiveDate.setHours(0, 0, 0, 0);
+
+      // 从上一轮调价生效日开始，推算 10 个工作日
+      let countDate = new Date(lastAdjustEffectiveDate);
       let workDaysCount = 0;
 
       while (workDaysCount < 10) {
-        currentDate.setDate(currentDate.getDate() + 1);
-        if (isWorkingDay(currentDate, holidaysMap)) {
+        countDate.setDate(countDate.getDate() + 1);
+        if (isWorkingDay(countDate, holidaysMap)) {
           workDaysCount++;
         }
       }
 
-      const year = currentDate.getFullYear();
-      const month = String(currentDate.getMonth() + 1).padStart(2, '0');
-      const day = String(currentDate.getDate()).padStart(2, '0');
-      
-      // 计算距离今天还有几天
+      const year = countDate.getFullYear();
+      const month = String(countDate.getMonth() + 1).padStart(2, '0');
+      const day = String(countDate.getDate()).padStart(2, '0');
+
+      // 计算距离今天倒计时天数
       const today = new Date();
       today.setHours(0, 0, 0, 0);
-      const targetDate = new Date(currentDate);
+      const targetDate = new Date(countDate);
       targetDate.setHours(0, 0, 0, 0);
       const diffDays = Math.ceil((targetDate - today) / (1000 * 60 * 60 * 24));
 
@@ -332,10 +337,12 @@
       if (diffDays > 0) {
         countdownText = ` (还剩 ${diffDays} 天)`;
       } else if (diffDays === 0) {
-        countdownText = ' (今天24时)';
+        countdownText = ' (今天 24:00)';
+      } else {
+        countdownText = ' (已到调价日)';
       }
 
-      return `${year}年${month}月${day}日 24:00${countdownText}`;
+      return `调价时间：${year}年${month}月${day}日 24:00${countdownText}`;
     }
 
     async function fetchHolidays() {
@@ -345,19 +352,17 @@
           holidayData = await res.json();
         }
       } catch (e) {
-        console.warn('获取节假日数据失败，将按照默认工作日计算', e);
+        console.warn('获取节假日数据失败，将按照常规工作日计算', e);
       }
     }
 
     async function init() {
       try {
-        // 并行加载节假日API与油价数据
         const [, res] = await Promise.all([
           fetchHolidays(),
           fetch(DATA_URL + '?t=' + new Date().getTime())
         ]);
 
-        // 从缓存中读取上一期数据（用于计算比对）
         const cached = localStorage.getItem('last_oil_data');
         if (cached) {
           previousData = JSON.parse(cached);
@@ -366,14 +371,11 @@
         if (!res.ok) throw new Error('网络请求失败');
         currentData = await res.json();
 
-        // 刷新 updateTime
         document.getElementById('updateTime').innerText = `更新时间：${formatDate(currentData.updated_at)}`;
 
-        // 计算下一次油价调整时间
         const nextAdjust = calculateNextAdjustDate(currentData.updated_at, holidayData);
         document.getElementById('nextAdjustDate').innerText = nextAdjust;
 
-        // 更新本地缓存（仅在时间不同时保存为对比参照）
         if (!previousData || previousData.updated_at !== currentData.updated_at) {
           localStorage.setItem('last_oil_data', JSON.stringify(currentData));
         }
@@ -382,7 +384,7 @@
       } catch (err) {
         console.error(err);
         document.getElementById('updateTime').innerText = '数据加载失败，请重试';
-        document.getElementById('nextAdjustDate').innerText = '--';
+        document.getElementById('nextAdjustDate').innerText = '调价时间：--';
       }
     }
 
@@ -395,21 +397,18 @@
 
       let provinces = Object.values(currentData.provinces);
 
-      // 1. 过滤省份
       if (searchKeyword) {
         provinces = provinces.filter(p => p.province.includes(searchKeyword));
       }
 
-      // 2. 排序
       provinces.sort((a, b) => {
         if (sortType === '92_desc') return parseFloat(b.t92) - parseFloat(a.t92);
         if (sortType === '92_asc') return parseFloat(a.t92) - parseFloat(b.t92);
         if (sortType === '95_desc') return parseFloat(b.t95) - parseFloat(a.t95);
         if (sortType === '95_asc') return parseFloat(a.t95) - parseFloat(b.t95);
-        return 0; // 默认原顺序
+        return 0;
       });
 
-      // 3. 渲染
       grid.innerHTML = provinces.map(p => {
         const prevP = previousData && previousData.provinces ? previousData.provinces[p.province] : null;
 
@@ -464,12 +463,6 @@
       }).join('');
     }
 
-
-
-
-
-
-    // 页面加载完成后初始化
     document.addEventListener('DOMContentLoaded', init);
   </script>
 </body>
