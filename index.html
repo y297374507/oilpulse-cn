@@ -18,6 +18,7 @@
       --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
     }
 
+    
     * {
       box-sizing: border-box;
       margin: 0;
@@ -60,6 +61,23 @@
       font-size: 0.875rem;
       color: var(--text-muted);
       margin-top: 4px;
+    }
+
+    .next-adjust-box {
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      padding: 8px 14px;
+      border-radius: 8px;
+      font-size: 0.875rem;
+      color: #1e40af;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .next-adjust-box strong {
+      font-size: 1rem;
+      color: #1d4ed8;
     }
 
     .controls {
@@ -197,6 +215,10 @@
         <h1>油价行情看板</h1>
         <div class="update-time" id="updateTime">正在加载数据...</div>
       </div>
+      <div class="next-adjust-box" id="nextAdjustBox">
+        <span>预计下一次调价时间：</span>
+        <strong id="nextAdjustDate">计算中...</strong>
+      </div>
       <div class="controls">
         <input type="text" id="searchInput" class="search-input" placeholder="搜索省份..." oninput="render()">
         <select id="sortSelect" class="select-input" onchange="render()">
@@ -217,9 +239,11 @@
   <script>
     // 假设数据路径（GitHub Actions 生成的数据路径）
     const DATA_URL = './data/latest.json';
+    const HOLIDAY_API_URL = 'https://cdn.jsdelivr.net/gh/NateScarlet/holiday-cn@master/2026.json';
 
     let currentData = null;
     let previousData = null;
+    let holidayData = null;
 
     // 格式化时间显示
     function formatDate(isoString) {
@@ -259,21 +283,95 @@
       return (isNaN(p) || p === 0) ? '-' : `￥${p.toFixed(2)}`;
     }
 
+    // 判断某一天是否为工作日（考虑到法定节假日与调休补班）
+    function isWorkingDay(date, holidaysMap) {
+      const year = date.getFullYear();
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const day = String(date.getDate()).padStart(2, '0');
+      const dateStr = `${year}-${month}-${day}`;
+
+      if (holidaysMap && holidaysMap.has(dateStr)) {
+        return !holidaysMap.get(dateStr); // isOffDay为true则非工作日，为false表示调休上班
+      }
+
+      const dayOfWeek = date.getDay();
+      return dayOfWeek !== 0 && dayOfWeek !== 6; // 周一到周五为常规工作日
+    }
+
+    // 根据最后更新时间往后推算 10 个工作日得出下一次调价日期（调价通常在第10个工作日24时生效）
+    function calculateNextAdjustDate(startDateStr, holidayList) {
+      if (!startDateStr) return '--';
+      
+      const holidaysMap = new Map();
+      if (holidayList && holidayList.days) {
+        holidayList.days.forEach(item => holidaysMap.set(item.date, item.isOffDay));
+      }
+
+      let currentDate = new Date(startDateStr);
+      let workDaysCount = 0;
+
+      while (workDaysCount < 10) {
+        currentDate.setDate(currentDate.getDate() + 1);
+        if (isWorkingDay(currentDate, holidaysMap)) {
+          workDaysCount++;
+        }
+      }
+
+      const year = currentDate.getFullYear();
+      const month = String(currentDate.getMonth() + 1).padStart(2, '0');
+      const day = String(currentDate.getDate()).padStart(2, '0');
+      
+      // 计算距离今天还有几天
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const targetDate = new Date(currentDate);
+      targetDate.setHours(0, 0, 0, 0);
+      const diffDays = Math.ceil((targetDate - today) / (1000 * 60 * 60 * 24));
+
+      let countdownText = '';
+      if (diffDays > 0) {
+        countdownText = ` (还剩 ${diffDays} 天)`;
+      } else if (diffDays === 0) {
+        countdownText = ' (今天24时)';
+      }
+
+      return `${year}年${month}月${day}日 24:00${countdownText}`;
+    }
+
+    async function fetchHolidays() {
+      try {
+        const res = await fetch(HOLIDAY_API_URL);
+        if (res.ok) {
+          holidayData = await res.json();
+        }
+      } catch (e) {
+        console.warn('获取节假日数据失败，将按照默认工作日计算', e);
+      }
+    }
+
     async function init() {
       try {
+        // 并行加载节假日API与油价数据
+        const [, res] = await Promise.all([
+          fetchHolidays(),
+          fetch(DATA_URL + '?t=' + new Date().getTime())
+        ]);
+
         // 从缓存中读取上一期数据（用于计算比对）
         const cached = localStorage.getItem('last_oil_data');
         if (cached) {
           previousData = JSON.parse(cached);
         }
 
-        // 获取最新采集的数据
-        const res = await fetch(DATA_URL + '?t=' + new Date().getTime());
         if (!res.ok) throw new Error('网络请求失败');
         currentData = await res.json();
 
         // 刷新 updateTime
         document.getElementById('updateTime').innerText = `更新时间：${formatDate(currentData.updated_at)}`;
+
+        // 计算下一次油价调整时间
+        const nextAdjust = calculateNextAdjustDate(currentData.updated_at, holidayData);
+        document.getElementById('nextAdjustDate').innerText = nextAdjust;
 
         // 更新本地缓存（仅在时间不同时保存为对比参照）
         if (!previousData || previousData.updated_at !== currentData.updated_at) {
@@ -284,6 +382,7 @@
       } catch (err) {
         console.error(err);
         document.getElementById('updateTime').innerText = '数据加载失败，请重试';
+        document.getElementById('nextAdjustDate').innerText = '--';
       }
     }
 
@@ -364,6 +463,11 @@
         `;
       }).join('');
     }
+
+
+
+
+
 
     // 页面加载完成后初始化
     document.addEventListener('DOMContentLoaded', init);
